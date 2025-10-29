@@ -5,6 +5,7 @@
   <title>3D Logo — Random XY Rotation (centered)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
+  <!-- Import map so bare imports work -->
   <script type="importmap">
   {
     "imports": {
@@ -17,13 +18,9 @@
   <style>
     html, body { height: 100%; margin: 0; overflow: hidden; background: #ffffff; }
     canvas { display: block; }
-    #dbg { position:fixed; right:10px; bottom:10px; font:12px system-ui; color:#444;
-           background:#fff9; padding:6px 8px; border-radius:8px }
   </style>
 </head>
 <body>
-  <div id="dbg">index3: starting…</div>
-
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -31,15 +28,12 @@
     import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
     // import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; // if your GLTF is Draco-compressed
 
-    const dbg = document.getElementById('dbg');
-    const setDbg = (t)=>{ if (dbg) dbg.textContent = t; };
-
-    // ---- Config (mirrors index2 feel) ----
+    // ---- Config (speed/feel) ----
     const START_ANGLE = { x: 0.12, y: 0.6, z: 0.0 };
     const TARGET_SIZE = 0.8;                 // same visual scale as index2
-    const BASE_SPEED  = { x: 0.36, y: 0.36 }; // rad/sec
-    const NOISE_AMP   = { x: 0.22, y: 0.30 }; // randomness amount
-    const NOISE_FREQ  = { x: 0.35, y: 0.25 }; // higher = faster drift
+    const BASE_SPEED  = { x: 0.36, y: 0.36 }; // steady spin (rad/sec)
+    const NOISE_AMP   = { x: 0.22, y: 0.30 }; // randomness amplitude
+    const NOISE_FREQ  = { x: 0.35, y: 0.25 }; // drift speed (higher = more wiggle)
 
     // ---- Scene / Camera / Renderer ----
     const scene = new THREE.Scene();
@@ -54,6 +48,7 @@
     renderer.toneMappingExposure = 1.0;
     document.body.appendChild(renderer.domElement);
 
+    // Lighting (PBR-friendly & neutral)
     const pmrem = new THREE.PMREMGenerator(renderer);
     scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.1).texture;
     scene.add(new THREE.AmbientLight(0xffffff, 0.35));
@@ -61,6 +56,7 @@
     dir.position.set(3, 4, 5);
     scene.add(dir);
 
+    // Pivot we rotate so motion is around the true center
     const pivot = new THREE.Group();
     pivot.rotation.set(START_ANGLE.x, START_ANGLE.y, START_ANGLE.z);
     scene.add(pivot);
@@ -72,7 +68,6 @@
     loader.load(
       './logo.gltf',
       (gltf) => {
-        setDbg('index3: model loaded');
         const model = gltf.scene || gltf.scenes[0];
 
         model.traverse(o => {
@@ -94,12 +89,11 @@
 
         pivot.add(model);
         fitCameraToObject(pivot, 1.2);
-        setDbg('index3: ready');
       },
-      (xhr) => setDbg(`index3: loading ${xhr.total ? Math.round(xhr.loaded/xhr.total*100) : '…'}%`),
+      undefined,
       (err) => {
         console.error('GLTF load error:', err);
-        setDbg('index3: ERROR loading model — showing placeholder');
+        // Optional: placeholder so page never looks blank
         const geom = new THREE.TorusKnotGeometry(0.6, 0.2, 128, 32);
         const mat  = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.1, roughness: 0.4 });
         pivot.add(new THREE.Mesh(geom, mat));
@@ -107,6 +101,7 @@
       }
     );
 
+    // ---- Camera framing helper ----
     function fitCameraToObject(obj, padding = 1.15) {
       const box = new THREE.Box3().setFromObject(obj);
       const sphere = box.getBoundingSphere(new THREE.Sphere());
@@ -120,8 +115,8 @@
       camera.lookAt(sphere.center);
     }
 
-    // ---- Random XY rotation using ImprovedNoise ----
-    const inoise = new ImprovedNoise();         // outputs roughly [-1, 1]
+    // ---- Random XY rotation (ImprovedNoise) ----
+    const inoise = new ImprovedNoise();   // outputs roughly [-1, 1]
     const clock  = new THREE.Clock();
     const seedX  = Math.random() * 1000;
     const seedY  = Math.random() * 2000;
@@ -131,11 +126,11 @@
       const dt = Math.min(clock.getDelta(), 0.033);
       const t  = clock.elapsedTime;
 
-      // Generate smooth noise for x and y
-      const nx = inoise.noise(t * NOISE_FREQ.x, seedX, 0); // -1..1
+      // Smooth noise for X & Y angular velocities
+      const nx = inoise.noise(t * NOISE_FREQ.x, seedX, 0);
       const ny = inoise.noise(t * NOISE_FREQ.y, seedY, 0);
 
-      const wx = BASE_SPEED.x + NOISE_AMP.x * nx;  // radians/sec
+      const wx = BASE_SPEED.x + NOISE_AMP.x * nx; // rad/sec
       const wy = BASE_SPEED.y + NOISE_AMP.y * ny;
 
       pivot.rotation.x += wx * dt;
@@ -145,6 +140,7 @@
     }
     animate();
 
+    // ---- Resize ----
     addEventListener('resize', () => {
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();

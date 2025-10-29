@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>3D Logo — Mouse Rotate</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Import map so bare imports work -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #ffffff; }
+    canvas { display: block; }
+    /* optional tiny hint */
+    #hint {
+      position: fixed; left: 12px; bottom: 12px; color: #666; font: 12px/1.4 system-ui;
+      user-select: none; pointer-events: none; opacity: .9;
+    }
+  </style>
+</head>
+<body>
+  <div id="hint">Move your cursor to rotate</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    // import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; // only if your GLTF is Draco-compressed
+
+    // ------- Config -------
+    const MAX_ROT = 0.9;          // maximum tilt in radians at screen edges
+    const SMOOTHING = 0.10;       // 0..1, how quickly it follows the cursor (higher = snappier)
+    const START_ANGLE = {x: 0.12, y: 0.6, z: 0}; // initial pose
+
+    // ------- Scene setup -------
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    document.body.appendChild(renderer.domElement);
+
+    // White background
+    scene.background = new THREE.Color(0xffffff);
+
+    // Soft PBR-friendly lighting
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.1).texture;
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+    dir.position.set(3, 4, 5);
+    scene.add(dir);
+
+    // Pivot for rotation around true center
+    const pivot = new THREE.Group();
+    pivot.rotation.set(START_ANGLE.x, START_ANGLE.y, START_ANGLE.z);
+    scene.add(pivot);
+
+    // ------- Load GLTF -------
+    const loader = new GLTFLoader();
+    // Draco example if needed:
+    // const draco = new DRACOLoader(); draco.setDecoderPath('https://unpkg.com/three@0.159.0/examples/jsm/libs/draco/'); loader.setDRACOLoader(draco);
+
+    loader.load('./logo.gltf', (gltf) => {
+      const model = gltf.scene || gltf.scenes[0];
+
+      model.traverse((o) => {
+        if (o.isMesh && o.material && 'envMapIntensity' in o.material) {
+          o.material.envMapIntensity = 1.0;
+        }
+      });
+
+      // Center and scale to a nice size
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+
+      const targetSize = 0.15;
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      model.scale.setScalar(targetSize / maxDim);
+
+      pivot.add(model);
+      fitCameraToObject(pivot, 1.2);
+    }, undefined, (e) => console.error('GLTF load error:', e));
+
+    // Auto-frame camera to object
+    function fitCameraToObject(obj, padding = 1.15) {
+      const box = new THREE.Box3().setFromObject(obj);
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      const radius = sphere.radius * padding;
+      const fov = THREE.MathUtils.degToRad(camera.fov);
+      const dist = Math.max(radius / Math.sin(fov / 2), 0.5);
+      camera.near = Math.max(0.01, dist - radius * 4);
+      camera.far  = dist + radius * 8;
+      camera.updateProjectionMatrix();
+      camera.position.copy(sphere.center).add(new THREE.Vector3(0, 0, dist));
+      camera.lookAt(sphere.center);
+    }
+
+    // ------- Pointer-driven rotation -------
+    // Map pointer [0..w]x[0..h] to normalized [-1..1] range,
+    // then to rotations: pitch (x) from -y, yaw (y) from x.
+    const targetRot = new THREE.Vector2(0, 0);
+    let hovering = false;
+
+    function updateTargetFromPointer(clientX, clientY) {
+      const nx = (clientX / innerWidth) * 2 - 1;   // [-1, 1]
+      const ny = (clientY / innerHeight) * 2 - 1;  // [-1, 1]
+      targetRot.set(-ny * MAX_ROT, nx * MAX_ROT);
+    }
+
+    addEventListener('pointermove', (e) => {
+      hovering = true;
+      updateTargetFromPointer(e.clientX, e.clientY);
+    }, { passive: true });
+
+    addEventListener('pointerleave', () => {
+      hovering = false;
+      // Ease back to start pose when cursor leaves
+      targetRot.set(START_ANGLE.x, START_ANGLE.y);
+    });
+
+    // Mobile tilt fallback (optional)
+    addEventListener('deviceorientation', (e) => {
+      if (typeof e.beta === 'number' && typeof e.gamma === 'number') {
+        const nx = THREE.MathUtils.clamp(e.gamma / 45, -1, 1);
+        const ny = THREE.MathUtils.clamp(e.beta / 45, -1, 1);
+        targetRot.set(-ny * MAX_ROT, nx * MAX_ROT);
+      }
+    }, { passive: true });
+
+    // ------- Animate (ease toward target) -------
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.033);
+
+      // Smoothly interpolate current rotation toward target
+      pivot.rotation.x += (targetRot.x - pivot.rotation.x) * (SMOOTHING * (dt * 60));
+      pivot.rotation.y += (targetRot.y - pivot.rotation.y) * (SMOOTHING * (dt * 60));
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // ------- Resize -------
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    });
+  </script>
+</body>
+</html>

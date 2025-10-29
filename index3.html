@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>3D Logo — Perpetual Random Motion</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Import map for bare imports -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #ffffff; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
+    // import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; // uncomment if your GLTF is Draco-compressed
+
+    // ----- Config -----
+    const TARGET_SIZE = 0.15; // relative scene units
+    const BASE_SPEED  = { x: 0.03, y: 0.22, z: 0.02 };  // radians/sec
+    const NOISE_SPEED = { x: 0.18, y: 0.28, z: 0.20 };  // random angular velocity amplitude
+    const NOISE_FREQ  = { x: 0.05, y: 0.035, z: 0.045 }; // Hz-ish
+
+    // ----- Scene / camera / renderer -----
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    document.body.appendChild(renderer.domElement);
+
+    // Neutral lighting
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.1).texture;
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+    dir.position.set(3, 4, 5);
+    scene.add(dir);
+
+    // Pivot for true-center rotation
+    const pivot = new THREE.Group();
+    scene.add(pivot);
+
+    // ----- Load GLTF (NOTE: assets path) -----
+    const loader = new GLTFLoader();
+    // const draco = new DRACOLoader(); draco.setDecoderPath('https://unpkg.com/three@0.159.0/examples/jsm/libs/draco/'); loader.setDRACOLoader(draco);
+
+    loader.load('./logo.gltf', (gltf) => {
+      const model = gltf.scene || gltf.scenes[0];
+
+      // Make sure we can see it under simple lighting
+      model.traverse((o) => {
+        if (o.isMesh) {
+          if (o.material) {
+            if ('envMapIntensity' in o.material) o.material.envMapIntensity = 1.0;
+            if ('transparent' in o.material && o.material.transparent && o.material.opacity === 0) {
+              o.material.opacity = 1.0; // guard against fully transparent exports
+            }
+            if ('side' in o.material) o.material.side = THREE.DoubleSide; // avoid backface culling surprises
+          }
+        }
+      });
+
+      // Center & scale
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      model.scale.setScalar(TARGET_SIZE / maxDim);
+
+      pivot.add(model);
+
+      // TEMP: show bounds so you always see *something* (delete these two lines later)
+      const helper = new THREE.Box3Helper(new THREE.Box3().setFromObject(model), 0x222222);
+      scene.add(helper);
+
+      // Pleasant starting pose
+      pivot.rotation.set(0.12, 0.6, 0.0);
+
+      // Frame camera
+      fitCameraToObject(pivot, 1.2);
+    }, undefined, (e) => {
+      console.error('GLTF load error:', e);
+    });
+
+    function fitCameraToObject(obj, padding = 1.15) {
+      const box = new THREE.Box3().setFromObject(obj);
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      const radius = sphere.radius * padding;
+      const fov = THREE.MathUtils.degToRad(camera.fov);
+      const dist = Math.max(radius / Math.sin(fov / 2), 0.5);
+      camera.near = Math.max(0.01, dist - radius * 4);
+      camera.far  = dist + radius * 8;
+      camera.updateProjectionMatrix();
+      camera.position.copy(sphere.center).add(new THREE.Vector3(0, 0, dist));
+      camera.lookAt(sphere.center);
+    }
+
+    // ----- Perpetual random motion -----
+    const noise = new SimplexNoise();
+    const clock = new THREE.Clock();
+    function animate() {
+      const dt = Math.min(clock.getDelta(), 0.033);
+      const t  = clock.elapsedTime;
+
+      const wx = BASE_SPEED.x + NOISE_SPEED.x * noise.noise2D(t * NOISE_FREQ.x,  0.123);
+      const wy = BASE_SPEED.y + NOISE_SPEED.y * noise.noise2D(t * NOISE_FREQ.y, 12.345);
+      const wz = BASE_SPEED.z + NOISE_SPEED.z * noise.noise2D(t * NOISE_FREQ.z, 23.456);
+
+      pivot.rotation.x += wx * dt;
+      pivot.rotation.y += wy * dt;
+      pivot.rotation.z += wz * dt;
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    // ----- Resize -----
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    });
+  </script>
+</body>
+</html>

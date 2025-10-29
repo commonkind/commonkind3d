@@ -79,7 +79,7 @@
       const center = box.getCenter(new THREE.Vector3());
       model.position.sub(center);
 
-      const targetSize = 0.3;
+      const targetSize = 0.8;
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
       model.scale.setScalar(targetSize / maxDim);
 

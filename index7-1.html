@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>3D Logo — Multi-Splatter (random, smooth)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/"
+    }
+  }
+  </script>
+  <style>
+    html, body { height:100%; margin:0; overflow:hidden; background:#ffffff; }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
+
+// ---------- Commonkind mega-palette ----------
+const MASTER_PALETTE = [
+  // Neo-Spectrum
+  '#5B6CFF', '#22E1FF', '#FF44EC', '#C7CBD6', '#16D19A', '#1FB6FF', '#FFB020',
+  // Prism Grid
+  '#2563EB', '#10B981', '#F43F5E', '#16A34A', '#0EA5E9', '#F59E0B',
+  // Holographic Slate
+  '#8B5CF6', '#2DD4BF', '#60A5FA', '#E5E7EB', '#22C55E', '#38BDF8',
+  // Clinical Neon
+  '#14B8A6', '#F97316', '#D1D5DB', '#10B981',
+  // Spectrum Ink
+  '#7C3AED', '#06B6D4', '#F43F5E', '#EDEEF3', '#22C55E', '#3B82F6',
+  // Daylight Quant
+  '#1D4ED8', '#9333EA', '#06B6D4', '#16A34A', '#0EA5E9', '#EAB308'
+].map(h => new THREE.Color(h));
+
+// ---------- config ----------
+const START_ANGLE = { x: 0.12, y: 0.6, z: 0.0 };
+const TARGET_SIZE = 0.8;
+
+// random rotation
+const BASE_SPEED  = { x: 0.5, y: 0.6 };
+const NOISE_AMP   = { x: 0.4, y: 0.4 };
+const NOISE_FREQ  = { x: 0.6, y: 0.5 };
+
+// splatter
+const OVERLAY = {
+  OPACITY: 0.9,
+  BASE_SCALE: 1.3,
+  EDGE: 0.1,
+  COVER: 0.65
+};
+
+// color morph timings
+const COLOR_LERP_TIME = 2.3;   // seconds to blend from one set to next
+
+// ---------- scene ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xffffff);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.1).texture;
+scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+dir.position.set(3, 4, 5);
+scene.add(dir);
+
+const pivot = new THREE.Group();
+pivot.rotation.set(START_ANGLE.x, START_ANGLE.y, START_ANGLE.z);
+scene.add(pivot);
+
+// ---------- load model ----------
+const loader = new GLTFLoader();
+let overlayUniformSets = [];
+
+loader.load('./logo.gltf', (gltf) => {
+  const base = gltf.scene || gltf.scenes[0];
+
+  // center & scale
+  const box = new THREE.Box3().setFromObject(base);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  base.position.sub(center);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  base.scale.setScalar(TARGET_SIZE / maxDim);
+
+  pivot.add(base);
+
+  // overlay clone
+  const overlay = base.clone(true);
+  overlay.traverse((o) => {
+    if (!o.isMesh) return;
+    o.material = makePaintMaterial();
+    o.renderOrder = 2;
+  });
+  pivot.add(overlay);
+
+  fitCameraToObject(pivot, 1.2);
+}, undefined, (err) => console.error(err));
+
+function fitCameraToObject(obj, padding=1.15) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const radius = sphere.radius * padding;
+  const fov = THREE.MathUtils.degToRad(camera.fov);
+  const dist = Math.max(radius / Math.sin(fov/2), 0.5);
+  camera.near = Math.max(0.01, dist - radius*4);
+  camera.far  = dist + radius*8;
+  camera.updateProjectionMatrix();
+  camera.position.copy(sphere.center).add(new THREE.Vector3(0,0,dist));
+  camera.lookAt(sphere.center);
+}
+
+// ---- paint material: 3 splatter layers ----
+function makePaintMaterial() {
+  const uniforms = {
+    uTime:    { value: 0 },
+    uCol0:    { value: MASTER_PALETTE[0].clone() },
+    uCol1:    { value: MASTER_PALETTE[1].clone() },
+    uCol2:    { value: MASTER_PALETTE[2].clone() },
+    uScale0:  { value: OVERLAY.BASE_SCALE * 0.8 },
+    uScale1:  { value: OVERLAY.BASE_SCALE * 1.1 },
+    uScale2:  { value: OVERLAY.BASE_SCALE * 1.6 },
+    uCover0:  { value: OVERLAY.COVER },
+    uCover1:  { value: OVERLAY.COVER * 0.75 },
+    uCover2:  { value: OVERLAY.COVER * 0.5 },
+    uEdge0:   { value: OVERLAY.EDGE },
+    uEdge1:   { value: OVERLAY.EDGE },
+    uEdge2:   { value: OVERLAY.EDGE * 1.4 },
+    uScroll0: { value: 0.10 },
+    uScroll1: { value: 0.16 },
+    uScroll2: { value: 0.22 },
+    uOpacity: { value: OVERLAY.OPACITY }
+  };
+  overlayUniformSets.push(uniforms);
+
+  const vert = /* glsl */`
+    varying vec3 vWorldPos;
+    void main(){
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorldPos = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `;
+  const frag = /* glsl */`
+    precision highp float;
+    varying vec3 vWorldPos;
+    uniform float uTime;
+    uniform vec3  uCol0, uCol1, uCol2;
+    uniform float uScale0, uScale1, uScale2;
+    uniform float uCover0, uCover1, uCover2;
+    uniform float uEdge0,  uEdge1,  uEdge2;
+    uniform float uScroll0, uScroll1, uScroll2;
+    uniform float uOpacity;
+
+    // --- noise helpers ---
+    float hash(vec3 p){
+      p = fract(p*0.3183099 + vec3(0.1,0.2,0.3));
+      p *= 17.0;
+      return fract(p.x*p.y*p.z*(p.x+p.y+p.z));
+    }
+    float noise(vec3 p){
+      vec3 i = floor(p), f = fract(p);
+      float n = mix(mix(mix(hash(i+vec3(0,0,0)), hash(i+vec3(1,0,0)), f.x),
+                        mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
+                    mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x),
+                        mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
+      return n;
+    }
+    float fbm(vec3 p){
+      float a=0.5, s=0.0;
+      for(int i=0;i<5;i++){
+        s += a*noise(p);
+        p *= 2.02;
+        a *= 0.5;
+      }
+      return s;
+    }
+
+    void main(){
+      // LAYER 0
+      vec3 p0 = vWorldPos * uScale0 + vec3(uTime * uScroll0, 0.0, 0.0);
+      float m0 = fbm(p0);
+      // jitter threshold so coverage isn't uniform
+      float jitter0 = (noise(p0 + vec3(37.2, 11.1, 5.5)) - 0.5) * 0.12;
+      float th0 = 1.0 - uCover0 + jitter0;
+      float mask0 = smoothstep(th0, th0 + uEdge0, m0);
+
+      // LAYER 1
+      vec3 p1 = vWorldPos * uScale1 + vec3(uTime * uScroll1, 0.0, 0.0);
+      float m1 = fbm(p1);
+      float jitter1 = (noise(p1 + vec3(13.4, 9.7, 2.1)) - 0.5) * 0.12;
+      float th1 = 1.0 - uCover1 + jitter1;
+      float mask1 = smoothstep(th1, th1 + uEdge1, m1);
+
+      // LAYER 2
+      vec3 p2 = vWorldPos * uScale2 + vec3(uTime * uScroll2, 0.0, 0.0);
+      float m2 = fbm(p2);
+      float jitter2 = (noise(p2 + vec3(5.9, 21.3, 17.7)) - 0.5) * 0.12;
+      float th2 = 1.0 - uCover2 + jitter2;
+      float mask2 = smoothstep(th2, th2 + uEdge2, m2);
+
+      // COMPOSITE
+      vec3 col = vec3(0.0);
+      float alpha = 0.0;
+      col   += uCol0 * mask0;
+      col   += uCol1 * mask1;
+      col   += uCol2 * mask2 * 1.2;
+      alpha  = max(mask0, max(mask1, mask2)) * uOpacity;
+
+      if (alpha < 0.01) discard;
+      gl_FragColor = vec4(col, alpha);
+    }
+  `;
+
+  return new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: vert,
+    fragmentShader: frag,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending
+  });
+}
+
+// ---------- animate ----------
+const inoise = new ImprovedNoise();
+const clock  = new THREE.Clock();
+const seedX  = Math.random()*1000;
+const seedY  = Math.random()*2000;
+
+// smooth color morph state
+let currentCols = pickDistinct(3);
+let nextCols    = pickDistinct(3);
+let colorT      = 0;
+// temp holders to avoid allocations
+const tmp0 = new THREE.Color();
+const tmp1 = new THREE.Color();
+const tmp2 = new THREE.Color();
+
+function pickDistinct(n=3){
+  const out = [];
+  for (let i=0;i<n;i++){
+    const c = MASTER_PALETTE[Math.floor(Math.random()*MASTER_PALETTE.length)];
+    out.push(c.clone());
+  }
+  return out;
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.033);
+  const t  = clock.elapsedTime;
+
+  // random rotation
+  const nx = inoise.noise(t*NOISE_FREQ.x, seedX, 0);
+  const ny = inoise.noise(t*NOISE_FREQ.y, seedY, 0);
+  pivot.rotation.x += (BASE_SPEED.x + NOISE_AMP.x*nx) * dt;
+  pivot.rotation.y += (BASE_SPEED.y + NOISE_AMP.y*ny) * dt;
+
+  // advance color morph
+  colorT += dt / COLOR_LERP_TIME;
+  if (colorT >= 1.0) {
+    colorT = 0.0;
+    currentCols = nextCols;
+    nextCols = pickDistinct(3);
+  }
+  // smootherstep
+  const k = colorT*colorT*(3 - 2*colorT);
+
+  // update overlay uniforms
+  for (const u of overlayUniformSets) {
+    u.uTime.value = t;
+
+    tmp0.copy(currentCols[0]).lerp(nextCols[0], k);
+    tmp1.copy(currentCols[1]).lerp(nextCols[1], k);
+    tmp2.copy(currentCols[2]).lerp(nextCols[2], k);
+
+    u.uCol0.value.copy(tmp0);
+    u.uCol1.value.copy(tmp1);
+    u.uCol2.value.copy(tmp2);
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+
+// ---------- resize ----------
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>
